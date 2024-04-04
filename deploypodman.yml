@@ -1,0 +1,61 @@
+- hosts: all
+  become: yes
+  vars_files:
+     - /home/ansible/playbook/vars/deploy_vars.yml
+  tasks:
+    - name: Start work
+      debug:
+        msg: "Starting The Deployment of CMEDS"
+    - name: Copy file to managed nodes
+      copy:
+        src: /u01/images/{{ filename }} # Source file on the Ansible control node
+        dest: /root/DR_Images/  # Destination path on managed nodes
+    - name: Podman Load the Tar file
+      containers.podman.podman_load:
+        input: /root/DR_Images/{{ filename }}
+      register: cmd_pull_out
+    - name: Print the name of the image
+      set_fact:
+         image_name: "{{ cmd_pull_out.stdout_lines | first | regex_replace('(Loaded image)(\\(s\\))?: ', '') }}"
+    - name: Print image vars
+      debug:
+        msg: "{{ image_name }}"
+    - name: Tag the image
+      containers.podman.podman_tag:
+       image: "{{ image_name }}"
+       target_names:
+          - 10.120.91.214:5000/{{ namespace }}/{{namespace}}:{{ tag }}
+    - name: Pull an image
+      containers.podman.podman_image:
+        name: 10.120.91.214:5000/{{ namespace }}/{{namespace}}:{{ tag }}
+    - name: Comment out old image version in the deployment file
+      ansible.builtin.replace:
+        path: /root/kubernetes/busy/busybox.yaml
+        regexp: '^(\s*image:\s*[^#]*)$'
+        replace: '# \1'
+      check_mode: no
+      when: inventory_hostname in groups['CMEDSMASTER']
+
+    - name: Insert new image version in the deployment file
+      ansible.builtin.lineinfile:
+        path: /root/kubernetes/busy/busybox.yaml
+        line: '        image: 10.120.91.214:5000/{{ namespace }}/{{namespace}}:{{ tag }}'
+        insertafter: '    - name: busybox'
+      when: inventory_hostname in groups['CMEDSMASTER']
+    - name: Run kubectl apply
+      ansible.builtin.command: kubectl apply -f /root/kubernetes/busy/busybox.yaml
+      register: apply_out
+      when: inventory_hostname in groups['CMEDSMASTER']
+    - name: Print image vars
+      debug:
+        msg: "{{ apply_out.stdout_lines| first }}"
+      when: inventory_hostname in groups['CMEDSMASTER']
+    - name: Restart the Deployment
+      ansible.builtin.command: kubectl rollout restart deploy busybox-deployment -n busybox
+      register: rollout
+      when: inventory_hostname in groups['CMEDSMASTER']
+    - name: Print Output from Deployment Restart
+      debug:
+        msg: "{{ rollout.stdout_lines| first }}"
+      when: inventory_hostname in groups['CMEDSMASTER']
+---
