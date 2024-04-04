@@ -1,0 +1,52 @@
+- hosts: CMEDSGRK
+  become: yes
+  vars_files:
+     - /home/ansible/playbook/vars/deploy_vars.yml
+  tasks:
+    - name: Start work
+      debug:
+        msg: "Starting The Deployment of CMEDS"
+    - name: Copy file to managed nodes
+      copy:
+        src: /u01/images/{{ filename }} # Source file on the Ansible control node
+        dest: /root/DR_Images/  # Destination path on managed nodes
+    - name: k3s import image from  the Tar file
+      ansible.builtin.command: k3s ctr images import /root/DR_Images/{{ filename }}
+      register: cmd_pull_out
+    - name: Extract Image Name
+      set_fact:
+         image_nom: "{{ cmd_pull_out.stdout.split(' ')[1] }}"
+    - name: Print extracted Name
+      debug:
+        msg: "{{ image_nom }}"
+    - name: Tag the image
+      ansible.builtin.command: k3s ctr images tag {{ image_nom }} localhost/{{ namespace }}/{{namespace}}:{{ tag }}
+      register: image_tag
+    - name: print image tag
+      debug:
+        msg: "{{ image_tag.stdout_lines | first }}"
+    - name: Comment out old image version in the deployment file
+      ansible.builtin.replace:
+        path: /root/DR_Images/kubernetes/busy/busybox.yaml
+        regexp: '^(\s*image:\s*[^#]*)$'
+        replace: '# \1'
+      check_mode: no
+      when: inventory_hostname in groups['CMEDSGRKMSTR']
+    - name: Insert new image version in the deployment file
+      ansible.builtin.lineinfile:
+        path: /root/DR_Images/kubernetes/busy/busybox.yaml
+        line: '        image: localhost/{{ namespace }}/{{namespace}}:{{ tag }}'
+        insertafter: '    - name: busybox'
+      when: inventory_hostname in groups['CMEDSGRKMSTR']
+    - name: Run kubectl apply
+      ansible.builtin.command: kubectl apply -f /root/DR_Images/kubernetes/busy/busybox.yaml
+      register: apply_out
+      when: inventory_hostname in groups['CMEDSGRKMSTR']
+    - name: Print image vars
+      debug:
+        msg: "{{ apply_out.stdout_lines| first }}"
+      when: inventory_hostname in groups['CMEDSGRKMSTR']
+    - name: Restart the Deployment
+      ansible.builtin.command: kubectl rollout restart deploy busybox-deployment -n busybox
+      register: rollout
+      when: inventory_hostname in groups['CMEDSGRKMSTR']
